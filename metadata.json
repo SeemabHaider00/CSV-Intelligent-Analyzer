@@ -1,0 +1,8 @@
+{
+  "name": "CSV Analyzer & Summarizer",
+  "description": "An intelligent full-stack tool that processes CSV files, counts rows, extracts headers, and leverages Gemini AI to identify columns, infer their meanings, and summarize datasets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
