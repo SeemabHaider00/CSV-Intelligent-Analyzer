@@ -20,6 +20,7 @@ import {
   BarChart3
 } from "lucide-react";
 import { analyzeAndSampleCSV } from "./utils/csvParser";
+import { parseExcelFile } from "./utils/excelParser";
 import { AnalysisResult } from "./types";
 import { DataVisualizer } from "./components/DataVisualizer";
 
@@ -91,6 +92,11 @@ export default function App() {
   const [sourceFileName, setSourceFileName] = useState("");
   const [sourceFileSize, setSourceFileSize] = useState<number>(0);
 
+  // Excel support tracking
+  const [fileTypeLoaded, setFileTypeLoaded] = useState<"CSV" | "EXCEL" | null>(null);
+  const [xlsxRowsExceeded, setXlsxRowsExceeded] = useState(false);
+  const [actualXlsxRowsCount, setActualXlsxRowsCount] = useState<number>(0);
+
   // Result state
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [activeTab, setActiveTab] = useState<"summary" | "columns" | "samples" | "visualizer">("summary");
@@ -120,41 +126,66 @@ export default function App() {
     setSourceFileName(selectedFile.name);
     setSourceFileSize(selectedFile.size);
 
-    // Guard 1: Excel Check
     const ext = selectedFile.name.split(".").pop()?.toLowerCase();
-    if (ext === "xlsx" || ext === "xls" || selectedFile.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") {
-      setIsXlsxError(true);
-      setFile(null);
-      return;
-    }
+    const isExcel = ext === "xlsx" || ext === "xls" || selectedFile.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
     try {
       setParsing(true);
-      setProgressMsg("Slicing file and pulling statistical samples...");
-      
-      const parsedData = await analyzeAndSampleCSV(selectedFile);
-      
-      setHeaders(parsedData.headers);
-      setRowCount(parsedData.rowCount);
-      setSampleRows(parsedData.sampleRows);
-      setSamplingUsed(parsedData.samplingUsed);
-      setEstimatedCount(parsedData.estimated);
-      setParsing(false);
+      if (isExcel) {
+        setProgressMsg("Reading Excel workbook and extracting data up to 50,000 rows...");
+        setFileTypeLoaded("EXCEL");
+        
+        const excelData = await parseExcelFile(selectedFile);
+        
+        setHeaders(excelData.headers);
+        setRowCount(excelData.rowCount);
+        setSampleRows(excelData.sampleRows);
+        setSamplingUsed(false); // Excel dataset loaded into memory is mapped directly
+        setEstimatedCount(false);
+        setXlsxRowsExceeded(excelData.exceededLimit);
+        setActualXlsxRowsCount(excelData.actualRowsInExcel);
+        setParsing(false);
 
-      // Instantly fire Gemini analysis
-      await analyzeWithGemini(
-        selectedFile.name,
-        selectedFile.size,
-        parsedData.headers,
-        parsedData.rowCount,
-        parsedData.sampleRows,
-        parsedData.samplingUsed
-      );
+        // Instantly fire Gemini analysis
+        await analyzeWithGemini(
+          selectedFile.name,
+          selectedFile.size,
+          excelData.headers,
+          excelData.rowCount,
+          excelData.sampleRows,
+          false
+        );
+      } else {
+        // Standard CSV Loader
+        setProgressMsg("Slicing CSV file and pulling statistical samples...");
+        setFileTypeLoaded("CSV");
+        setXlsxRowsExceeded(false);
+        setActualXlsxRowsCount(0);
+        
+        const parsedData = await analyzeAndSampleCSV(selectedFile);
+        
+        setHeaders(parsedData.headers);
+        setRowCount(parsedData.rowCount);
+        setSampleRows(parsedData.sampleRows);
+        setSamplingUsed(parsedData.samplingUsed);
+        setEstimatedCount(parsedData.estimated);
+        setParsing(false);
+
+        // Instantly fire Gemini analysis
+        await analyzeWithGemini(
+          selectedFile.name,
+          selectedFile.size,
+          parsedData.headers,
+          parsedData.rowCount,
+          parsedData.sampleRows,
+          parsedData.samplingUsed
+        );
+      }
 
     } catch (err: any) {
       console.error(err);
       setParsing(false);
-      setGlobalError(err.message || "Could not parse files. Ensure the file is a legal formatted CSV.");
+      setGlobalError(err.message || "Could not parse files. Ensure the file is of the correct format (CSV or Excel).");
     }
   };
 
@@ -367,7 +398,7 @@ export default function App() {
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept=".csv"
+                    accept=".csv,.xlsx,.xls"
                     className="hidden"
                     onChange={handleFileChange}
                   />
@@ -377,15 +408,21 @@ export default function App() {
                   </div>
 
                   <h3 className="font-medium text-slate-800 text-lg mb-1">
-                    {dragActive ? "Drop your dataset now" : "Upload your CSV Dataset"}
+                    {dragActive ? "Drop your dataset now" : "Upload your CSV or Excel Dataset"}
                   </h3>
-                  <p className="text-xs text-slate-500 text-center max-w-sm mb-4 leading-relaxed">
-                    Drag and drop file here, or click to browse. Reads up to millions of records securely.
+                  <p className="text-xs text-slate-500 text-center max-w-md mb-4 leading-relaxed">
+                    Drag and drop file here, or click to browse. Excel support is optimized for files up to <strong>50,000 rows</strong>. If Excel parsing fails or exceeds this limit, please use the <strong>CSV option</strong> as fallback.
                   </p>
 
-                  <div className="flex items-center gap-1.5 py-1.5 px-3 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-600 font-mono">
-                    <FileText className="w-3.5 h-3.5" />
-                    <span>Supports formatted .csv files only</span>
+                  <div className="flex flex-col sm:flex-row items-center gap-3">
+                    <div className="flex items-center gap-1.5 py-1.5 px-3 bg-indigo-50/50 border border-indigo-100 rounded-lg text-xs text-indigo-700 font-sans font-medium">
+                      <FileSpreadsheet className="w-3.5 h-3.5 text-indigo-500" />
+                      <span>Excel (.xlsx, .xls) up to 50k rows</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 py-1.5 px-3 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-600 font-sans font-medium">
+                      <FileText className="w-3.5 h-3.5 text-slate-500" />
+                      <span>CSV for higher volumes (Millions of rows)</span>
+                    </div>
                   </div>
                 </div>
 
@@ -545,10 +582,28 @@ export default function App() {
                       <span id="active-dot" className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
                     </span>
                     <span className="font-medium">
-                      Processed via {samplingUsed ? "Statistical Sampler (Optimized)" : "Full File Scan"}
+                      Processed via {fileTypeLoaded === "EXCEL" ? "Excel Loader (Direct)" : (samplingUsed ? "Statistical Sampler (Optimized)" : "Full File Scan")}
                     </span>
                   </div>
                 </div>
+
+                {/* Excel Row Cap Warning Alert */}
+                {fileTypeLoaded === "EXCEL" && xlsxRowsExceeded && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-4.5 flex gap-3 text-sm text-amber-800 shadow-sm" id="excel-limit-alert">
+                    <AlertTriangle className="w-5.5 h-5.5 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-semibold mb-1">
+                        Excel File Cap Applied (50,000 Rows Processed)
+                      </p>
+                      <p className="text-xs text-amber-700 leading-relaxed mb-2">
+                        Aapki Excel file mein total <strong>{formatRows(actualXlsxRowsCount)} rows</strong> hain. Browser execution speed aur high UI rendering performance maintain karne ke liye maximum limit **50,000 rows** hai. Humne pehli 50,000 rows ka schema analysis successfully complete kiya hai.
+                      </p>
+                      <p className="text-xs text-amber-700 leading-relaxed">
+                        💡 <strong>Sifarish (CSV Fallback Option):</strong> Agar aap mukammal dataset bina limit analyze karna chahte hain, to is file ko Excel se <strong>Save As &gt; Comma Separated Values (.csv)</strong> kar ke upload karein. Hamara CSV sampler high-performance streaming capability se baghair kisi scale boundaries ke millions of rows handle kar leta hai!
+                      </p>
+                    </div>
+                  </div>
+                )}
 
                 {/* Tab layout navigation */}
                 <div className="border-b border-slate-150 flex flex-wrap gap-x-6 gap-y-2 text-sm font-semibold">
